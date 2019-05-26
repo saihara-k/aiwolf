@@ -8,7 +8,8 @@ import aiwolfpy.contentbuilder as cb
 import numpy as np
 # sample
 import aiwolfpy.cash
-
+# import time
+# myname = 'cantar{}'.format(str(time.time())[-2:])
 myname = 'cantar'
 import win_count
 
@@ -52,6 +53,9 @@ class PythonPlayer(object):
         self.vote_declare = 0
         self.strong_agents = self.win_count.initialize()
         self.try_pp_block = False
+        self.co_dict = {}
+        self.pretend_seer = False
+        self.pretend_medium = False
         
 
 
@@ -61,12 +65,14 @@ class PythonPlayer(object):
         # print(request)
         # update base_info
         self.base_info = base_info
+        print(self.co_dict)
 
         # result
         if request == 'DAILY_INITIALIZE':
             for i in range(diff_data.shape[0]):
                 # IDENTIFY
                 if diff_data['type'][i] == 'identify':
+                    print(diff_data)
                     self.not_reported = True
                     self.myresult = diff_data['text'][i]
 
@@ -94,16 +100,39 @@ class PythonPlayer(object):
                 # no talk at day:0
                 self.predicter_15.update_pred()
 
+            elif self.base_info['day'] == 0 and request == 'WHISPER':
+                contents = []
+                for i in range(diff_data.shape[0]):
+                    content = diff_data.text[i].split()
+                    if content[0] == 'COMINGOUT' and diff_data['agent'][i] != self.base_info['agentIdx']:
+                        contents.append(content[2])
+                if contents.count('SEER')>0:
+                    self.pretend_seer = False
+                    if contents.count('MEDIUM') >0:
+                        self.comingout = 'VILLAGER'
+                    else:
+                        self.pretend_medium = True
+                        self.comingout = 'MEDIUM'
+                else:
+                    self.pretend_seer = True
+                    self.comingout = 'SEER'
+            elif request == 'TALK':
+                for i in range(diff_data.shape[0]):
+                    content = diff_data.text[i].split()
+                    if content[0] == 'COMINGOUT' and diff_data['agent'][i] != self.base_info['agentIdx']:
+                        self.co_dict[diff_data['agent'][i]] = content[2]
             else:
                 # update pred
                 self.predicter_15.update(diff_data)
         else:
             if self.base_info['day'] == 2 and request == 'TALK':
+                contents = []
                 for i in range(diff_data.shape[0]):
                     content = diff_data.text[i].split()
                     if content[0] == 'COMINGOUT':
-                        if content[2] == 'POSSESSED':
-                            self.try_pp_block = True
+                        contents.append(content[2])
+                if 'POSSESSED' in contents and 'WEREWOLF' in contents:
+                    self.try_pp_block = 1
             self.predicter_5.update(diff_data)
 
         if request == 'FINISH':
@@ -134,17 +163,26 @@ class PythonPlayer(object):
                 self.comingout = 'MEDIUM'
                 return cb.comingout(self.base_info['agentIdx'], self.comingout)
             elif self.base_info['myRole'] == 'POSSESSED' and self.comingout == '':
-                self.comingout = 'SEER'
+                if np.random.rand() < 0.5:
+                    self.comingout = 'SEER'
+                    self.pretend_seer = True
+                else:
+                    self.comingout = 'MEDIUM'
+                    self.pretend_medium = True
                 return cb.comingout(self.base_info['agentIdx'], self.comingout)
 
             # 1.2 ww pretend seer
-            elif self.base_info['myRole'] == 'WEREWOLF' and self.comingout == '' and np.random.randint(1,100) > 80:
-                self.comingout = 'SEER'
+            elif self.base_info['myRole'] == 'WEREWOLF':
+                if self.pretend_seer and self.base_info['day'] == 1 and self.talk_turn <= 1:
+                    self.comingout = 'SEER'
+                # 毎日、毎ターン霊媒師だと訴え続ける
+                elif self.pretend_medium:
+                    self.comingout = 'MEDIUM'
                 return cb.comingout(self.base_info['agentIdx'], self.comingout)
 
             # 1.3 pp
-            if self.base_info['statusMap'].values().count('ALIVE') == 4:
-                if self.base_info['myRole']
+            # if self.base_info['statusMap'].values().count('ALIVE') == 4:
+            #     if self.base_info['myRole']
 
             # 2.report
             if self.base_info['myRole'] == 'SEER' and self.not_reported:
@@ -153,7 +191,7 @@ class PythonPlayer(object):
             elif self.base_info['myRole'] == 'MEDIUM' and self.not_reported:
                 self.not_reported = False
                 return self.myresult
-            elif self.base_info['myRole'] == 'POSSESSED' and self.not_reported:
+            elif self.pretend_seer and self.not_reported:       
                 self.not_reported = False
                 # FAKE DIVINE
                 # highest prob ww in alive agents
@@ -169,6 +207,8 @@ class PythonPlayer(object):
                 return self.myresult
 
             # 3.declare vote if not yet
+            if self.vote < 0.3:
+                return cb.skip()
             if self.vote_declare != self.vote():
                 if self.estimated:
                     self.vote_declare = self.vote()
@@ -178,7 +218,10 @@ class PythonPlayer(object):
                     if self.base_info['myRole'] not in ['WEREWOLF', 'POSSESSED']:
                         return cb.estimate(self.vote(), 'WEREWOLF')
                     else:
-                        return cb.estimate(self.vote(), 'WEREWOLF')
+                        tmp_myRole, self.base_info['myRole'] = self.base_info['myRole'], 'VILLAGER'
+                        fake_vote = self.vote()
+                        self.base_info['myRole'] = tmp_myRole
+                        return cb.estimate(fake_vote, 'WEREWOLF')
 
             # 4. skip
             if self.talk_turn <= 10:
@@ -192,9 +235,9 @@ class PythonPlayer(object):
             if self.base_info['myRole'] == 'SEER' and self.comingout == '':
                 self.comingout = 'SEER'
                 return cb.comingout(self.base_info['agentIdx'], self.comingout)
-            elif self.base_info['myRole'] == 'MEDIUM' and self.comingout == '':
-                self.comingout = 'MEDIUM'
-                return cb.comingout(self.base_info['agentIdx'], self.comingout)
+            # elif self.base_info['myRole'] == 'MEDIUM' and self.comingout == '':
+            #     self.comingout = 'MEDIUM'
+                # return cb.comingout(self.base_info['agentIdx'], self.comingout)
             elif self.base_info['myRole'] == 'POSSESSED' and self.comingout == '':
                 self.comingout = 'SEER'
                 return cb.comingout(self.base_info['agentIdx'], self.comingout)
@@ -204,7 +247,7 @@ class PythonPlayer(object):
                 self.comingout = 'POSSESSED'
                 return cb.comingout(self.base_info['agentIdx'], self.comingout)
 
-            # 1.3 PP-Block cantar added
+            # 1.3 PP-Block
             if self.base_info['day'] == 2 and self.base_info['myRole'] == 'VILLAGER' and self.try_pp_block:
                 self.comingout = 'WEREWOLF'
                 return cb.comingout(self.base_info['agentIdx'], self.comingout)
@@ -243,7 +286,8 @@ class PythonPlayer(object):
             return cb.over()
 
     def whisper(self):
-        if 
+        if self.base_info['day'] == 0:
+            return cb.comingout(self.base_info['agentIdx'], self.comingout)
         return cb.skip()
 
     def vote(self):
@@ -306,7 +350,6 @@ class PythonPlayer(object):
                         p = p0
                         idx = i
             else:
-                # PP-BLOCK
 
                 # if 
                 p0_mat = self.predicter_5.ret_pred_wx(0)
@@ -321,6 +364,15 @@ class PythonPlayer(object):
 
     def attack(self):
         if self.game_setting['playerNum'] == 15:
+            # 対抗を殺す
+            ids = self.co_dict.keys()
+            for idx in ids:
+                if self.base_info['statusMap'][str(idx)] == 'DEAD':
+                    del self.co_dict[idx]
+            
+            for idx in self.co_dict.keys():
+                if not str(idx) in self.base_info['roleMap'].keys():
+                    return idx
             # highest prob hm in alive agents
             p = -1
             idx = 1
@@ -388,6 +440,11 @@ class PythonPlayer(object):
             self.divined_list.append(idx)
             return idx
         else:
+            # 脅威噛み
+            if len(self.strong_agents)>0:
+                for i in self.strong_agents:
+                    if self.base_info['statusMap'][str(i)] == 'ALIVE' and int(i) != self.base_info['agentIdx']:
+                        return int(i)
             # highest prob ww in alive and not divined agents provided watashi ningen
             p = -1
             idx = 1
